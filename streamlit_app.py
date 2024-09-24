@@ -20,18 +20,23 @@ except ImportError:
     st.warning("Chroma vectorstore is not available, continuing without it.")
     Chroma = None  # Fallback in case Chroma isn't essential for your app
 
-from langchain.text_splitter import CharacterTextSplitter
-from langchain.chains import RetrievalQA
-from langchain.chat_models import ChatOpenAI
-from langchain.document_loaders import UnstructuredHTMLLoader
-from langchain.embeddings import OpenAIEmbeddings
-from langchain.agents import create_retriever_tool
-from langchain.memory import ConversationBufferMemory
-from langchain.memory.chat_message_histories import StreamlitChatMessageHistory
-from langchain.agents import OpenAIFunctionsAgent
-from langchain.schema.messages import SystemMessage
-from langchain.prompts import MessagesPlaceholder
-from langchain.chains import ConversationalRetrievalChain
+# Adjust the imports based on your langchain version
+try:
+    from langchain.text_splitter import CharacterTextSplitter
+    from langchain.chains import RetrievalQA
+    from langchain.chat_models import ChatOpenAI
+    from langchain.document_loaders import UnstructuredHTMLLoader
+    from langchain.embeddings import OpenAIEmbeddings
+    from langchain.agents import create_retriever_tool
+    from langchain.memory import ConversationBufferMemory
+    from langchain.memory.chat_message_histories import StreamlitChatMessageHistory
+    from langchain.agents import OpenAIFunctionsAgent
+    from langchain.schema.messages import SystemMessage
+    from langchain.prompts import MessagesPlaceholder
+    from langchain.chains import ConversationalRetrievalChain
+except ImportError as e:
+    st.error(f"Import error: {e}")
+    st.warning("Ensure you have the correct version of `langchain` installed. Check documentation for updated import paths.")
 
 # Function to clean column names
 def rename_dataset_columns(dataframe):
@@ -212,6 +217,18 @@ if function_response is not None:
     )
     st.plotly_chart(fig2, use_container_width=True)
 
+    # Segmentation logic based on RFM
+    recency_bins = np.arange(start=r_max_slider, stop=r_slider, step=r_slider)
+    frequency_bins = np.arange(start=0, stop=f_max_slider + f_slider, step=f_slider)
+
+    hist, xedges, yedges = np.histogram2d(
+        x=function_response['Frequency'], y=function_response['Recency'], bins=[frequency_bins, recency_bins]
+    )
+
+    hist_df = pd.DataFrame(hist, index=xedges[:-1], columns=yedges[:-1])
+    hist_df = hist_df.loc[:, (hist_df != 0).any(axis=0)].loc[(hist_df != 0).any(axis=1)]
+    st.write(hist_df)
+
     # Handle GPT segments
     try:
         get_gpt_segments = openai.ChatCompletion.create(
@@ -219,7 +236,7 @@ if function_response is not None:
             messages=[
                 {
                     "role": "system",
-                    "content": f"If I had a dataframe below like this: \n {function_response} \n where the headers represent the number of days since the customer last purchased, and the index represents the number of times the customers purchased (frequency), come up with distinct and non-overlapping segmentation conditions."
+                    "content": f"If I had a dataframe below like this: \n {hist_df} \n where the headers represent the number of days since the customer last purchased, and the index represents the number of times the customers purchased (frequency), come up with distinct and non-overlapping segmentation conditions."
                 },
             ],
             temperature=0.7
