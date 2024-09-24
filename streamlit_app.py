@@ -6,13 +6,13 @@ import os
 import openai
 
 # Securely fetching the OpenAI API key
-api_key = os.getenv(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)  # Corrected to use the correct environment variable name
+api_key = os.getenv("OPEN_API_KEY")  # Corrected to use the correct environment variable name
 if not api_key:
     st.error("OpenAI API key is not set. Please set the OPENAI_API_KEY environment variable in your system.")
     st.stop()  # Halts further execution if the API key is not configured
 
 # Importing the OpenAI library only after confirming the API key is available
-openai.api_key = api_key
+openai.api_key = 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
 
 # Handle the Chroma import with a fallback
 try:
