@@ -2,86 +2,143 @@ import streamlit as st
 import pandas as pd
 from io import StringIO
 import plotly.express as px
+import plotly.graph_objects as go
+import numpy as np
+import json
+import math
 import os
-import openai
 
-# Initialize the API key securely
-api_key = os.getenv("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")
+# Securely fetching the OpenAI API key
+api_key = os.getenv(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)
 if not api_key:
-    st.error("OpenAI API key is not set. Please configure your environment variable `OPENAI_API_KEY`.")
-    st.stop()  # Stop the app if the API key is not configured
+    st.error("OpenAI API key is not set. Please set the OPENAI_API_KEY environment variable in your system.")
+    st.stop()  # Halts further execution if the API key is not found
 
+# Importing the OpenAI library only after confirming the API key is available
+import openai
 openai.api_key = api_key
 
-# Attempt to import optional dependencies
+# Handle the Chroma import with a fallback
 try:
     from langchain.vectorstores import Chroma
 except ImportError:
-    Chroma = None
-    st.warning("Chroma vectorstore is not available, continuing without this component.")
+    st.warning("Chroma vectorstore is not available, continuing without it.")
+    Chroma = None  # Fallback in case Chroma isn't essential for your app
 
-# Function to load data from uploaded CSV files
-def load_data():
-    uploaded_files = st.file_uploader("Choose a CSV file", accept_multiple_files=True, help="Upload one or more CSV files.")
-    if not uploaded_files:
-        return pd.DataFrame()
-    data_frames = []
-    for uploaded_file in uploaded_files:
-        stringio = StringIO(uploaded_file.getvalue().decode("utf-8"))
-        data_frames.append(pd.read_csv(stringio))
-    return pd.concat(data_frames, ignore_index=True) if data_frames else pd.DataFrame()
+# Adjust the imports based on your langchain version
+try:
+    from langchain.text_splitter import CharacterTextSplitter
+    from langchain.chains import RetrievalQA
+    from langchain.chat_models import ChatOpenAI
+    from langchain.document_loaders import UnstructuredHTMLLoader
+    from langchain.embeddings import OpenAIEmbeddings
+    from langchain.agents import create_retriever_tool
+    from langchain.memory import ConversationBufferMemory
+    from langchain.memory.chat_message_histories import StreamlitChatMessageHistory
+    from langchain.agents import OpenAIFunctionsAgent
+    from langchain.schema.messages import SystemMessage
+    from langchain.prompts import MessagesPlaceholder
+    from langchain.chains import ConversationalRetrievalChain
+except ImportError as e:
+    st.error(f"Import error: {e}. Ensure you have the correct version of `langchain` installed. Check documentation for updated import paths.")
 
-orders_df = load_data()
-
-# Function to clean and prepare column names
-def prepare_columns(dataframe):
-    dataframe.columns = dataframe.columns.str.replace('[^0-9a-zA-Z]+', '_').str.lower().str.strip()
+# Function to clean column names
+def rename_dataset_columns(dataframe):
+    dataframe.columns = dataframe.columns.str.replace('[#,@,&,$,(,)]', '')
+    dataframe.columns = [re.sub(r'%|_%', '_percentage', x) for x in dataframe.columns]
+    dataframe.columns = dataframe.columns.str.replace(' ', '_')
+    dataframe.columns = [x.lstrip('_') for x in dataframe.columns]
+    dataframe.columns = [x.strip() for x in dataframe.columns]
     return dataframe
 
-# Check if data is loaded to proceed
-if not orders_df.empty:
-    orders_df = prepare_columns(orders_df)
-
-    # Function to infer datetime format using OpenAI
-    def get_datetime_format(sample_time):
+# Function to auto-convert column data types
+def convert_datatype(df):
+    for c in df.columns[df.dtypes == 'object']:
         try:
-            response = openai.Completion.create(
-                model="gpt-3.5-turbo",
-                prompt=f"Provide the strftime format for this datetime string: '{sample_time}'",
-                max_tokens=50
-            )
-            return response.choices[0].text.strip()
-        except Exception as e:
-            st.error(f"Failed to retrieve datetime format: {str(e)}")
-            return None
+            df[c] = pd.to_datetime(df[c])
+        except:
+            pass
+    df = df.convert_dtypes()
+    return df
 
-    # RFM analysis to compute metrics
-    def perform_rfm_analysis(df, date_col, customer_id_col, monetary_col):
-        date_format = get_datetime_format(df[date_col].dropna().iloc[0])
-        if date_format:
-            df[date_col] = pd.to_datetime(df[date_col], format=date_format, errors='coerce')
-        else:
-            df[date_col] = pd.to_datetime(df[date_col], errors='coerce')  # Fallback if format detection fails
+# File upload functionality
+uploaded_files = st.file_uploader("Choose a CSV file", accept_multiple_files=True)
 
-        current_date = df[date_col].max()
-        rfm = df.groupby(customer_id_col).agg({
-            date_col: lambda x: (current_date - x.max()).dt.days,
-            customer_id_col: 'size',
-            monetary_col: 'sum'
-        }).rename(columns={date_col: 'Recency', customer_id_col: 'Frequency', monetary_col: 'MonetaryValue'})
-        return rfm
+@st.cache(allow_output_mutation=True)
+def load_data(files):
+    data_frames = []
+    for uploaded_file in files:
+        stringio = StringIO(uploaded_file.getvalue().decode("utf-8"))
+        df = pd.read_csv(stringio)
+        data_frames.append(df)
+    combined_df = pd.concat(data_frames, ignore_index=True) if data_frames else pd.DataFrame()
+    return combined_df
 
-    # Select columns and perform analysis
-    date_column = st.selectbox('Select Date Column for Recency:', orders_df.columns)
-    customer_id_column = st.selectbox('Select Customer ID Column for Frequency:', orders_df.columns)
-    monetary_value_column = st.selectbox('Select Monetary Value Column:', orders_df.columns)
+orders_df = load_data(uploaded_files)
+orders_df = rename_dataset_columns(orders_df)
 
-    rfm_data = perform_rfm_analysis(orders_df, date_column, customer_id_column, monetary_value_column)
-    if not rfm_data.empty:
-        st.write("RFM Analysis Results", rfm_data)
-        fig = px.scatter(rfm_data, x='Recency', y='Frequency', size='MonetaryValue', color='MonetaryValue')
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.error("RFM analysis failed or resulted in empty data.")
+# Function to determine datetime format using GPT
+def get_time_format(time):
+    response = openai.ChatCompletion.create(
+        model="gpt-4-1106-preview",
+        messages=[{
+            "role": "system",
+            "content": f"If I had a datetime string like this: {time}, what is the strftime format of this string? Return the strftime format only. Do not return anything else."
+        }],
+        temperature=0
+    )
+    return response['choices'][0]['message']['content']
+
+# RFM Analysis function
+def rfm_analysis(date_column, customer_id_column, monetary_value_column):
+    data = orders_df
+    data = data.dropna(subset=[date_column, customer_id_column, monetary_value_column])
+    strfttime = get_time_format(data[date_column].iloc[0])
+    data[date_column] = pd.to_datetime(data[date_column], format=strfttime)
+    data[customer_id_column] = data[customer_id_column].astype(str)
+    current_date = data[date_column].max()
+
+    rfm = data.groupby(customer_id_column).agg({
+        date_column: lambda x: (current_date - x.max()).days,
+        customer_id_column: 'count',
+        monetary_value_column: 'sum'
+    })
+
+    rfm.rename(columns={
+        date_column: 'Recency',
+        customer_id_column: 'Frequency',
+        monetary_value_column: 'MonetaryValue'
+    }, inplace=True)
+    return rfm
+
+# Main app logic to display results
+if not orders_df.empty:
+    col_for_r = st.selectbox('What is the column used for recency - date of purchase?', orders_df.columns)
+    col_for_f = st.selectbox('What is the column used to identify a customer ID?', orders_df.columns)
+    col_for_m = st.selectbox('What is the column used for order value?', orders_df.columns)
+
+    st.title("Key metrics")
+    function_response = rfm_analysis(
+        date_column=col_for_r,
+        customer_id_column=col_for_f,
+        monetary_value_column=col_for_m
+    )
+
+    if function_response is not None:
+        st.metric(label="Average spending per customer", value=function_response["MonetaryValue"].mean())
+        st.metric(label="Average number of purchases per customer", value=function_response["Frequency"].mean())
+        st.metric(label="Average order value", value=orders_df[col_for_m].mean())
+
+        st.title("Buying frequency")
+        st.write(function_response[["Frequency", "Recency"]])
+        fig = px.histogram(function_response, x="Frequency")
+        st.write(fig)
+
+        st.title("RFM Analysis")
+        company_desc = st.text_input('Description of company', 'an ecommerce company selling goods')
+
+        # Plot RFM results
+        st.write(function_response)
+        st.scatter_chart(data=function_response, x="Recency", y="Frequency", color="MonetaryValue")
 else:
-    st.info("Please upload data to begin analysis.")
+    st.warning("Please upload a CSV file to proceed with the analysis.")
