@@ -1,4 +1,3 @@
-# First
 import openai
 import streamlit as st
 from io import StringIO
@@ -9,6 +8,10 @@ import numpy as np
 import pandas as pd
 import json
 import math
+import os
+
+# Set the OpenAI API key securely
+openai.api_key = os.getenv("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")
 
 # Handle the Chroma import with a fallback
 try:
@@ -22,17 +25,13 @@ from langchain.chains import RetrievalQA
 from langchain.chat_models import ChatOpenAI
 from langchain.document_loaders import UnstructuredHTMLLoader
 from langchain.embeddings import OpenAIEmbeddings
-from langchain.agents.agent_toolkits import create_retriever_tool
-from langchain.agents.openai_functions_agent.agent_token_buffer_memory import AgentTokenBufferMemory
+from langchain.agents import create_retriever_tool
 from langchain.memory import ConversationBufferMemory
 from langchain.memory.chat_message_histories import StreamlitChatMessageHistory
-from langchain.agents.openai_functions_agent.base import OpenAIFunctionsAgent
+from langchain.agents import OpenAIFunctionsAgent
 from langchain.schema.messages import SystemMessage
 from langchain.prompts import MessagesPlaceholder
 from langchain.chains import ConversationalRetrievalChain
-
-# Ensure your OpenAI API key is securely handled
-openai.api_key = "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"
 
 # Function to clean column names
 def rename_dataset_columns(dataframe):
@@ -58,17 +57,20 @@ uploaded_files = st.file_uploader("Choose a CSV file", accept_multiple_files=Tru
 
 @st.cache_data
 def load_data(files):
+    data_frames = []
     for uploaded_file in files:
         stringio = StringIO(uploaded_file.getvalue().decode("utf-8"))
-        orders_df = pd.read_csv(stringio)
-        return orders_df
+        df = pd.read_csv(stringio)
+        data_frames.append(df)
+    combined_df = pd.concat(data_frames, ignore_index=True)
+    return combined_df
 
 orders_df = load_data(uploaded_files)
 orders_df = rename_dataset_columns(orders_df)
 
 # Function to determine datetime format using GPT
 def get_time_format(time):
-    return openai.ChatCompletion.create(
+    response = openai.ChatCompletion.create(
         model="gpt-4-1106-preview",
         messages=[
             {
@@ -78,19 +80,20 @@ def get_time_format(time):
         ],
         temperature=0
     )
+    return response['choices'][0]['message']['content']
 
 # RFM Analysis function
 def rfm_analysis(date_column, customer_id_column, monetary_value_column):
     data = orders_df
     data = data.dropna(subset=[date_column, customer_id_column, monetary_value_column])
     # Ensure the date column is in datetime format
-    strfttime = get_time_format(data[date_column].iloc[0]).choices[0]["message"]["content"]
+    strfttime = get_time_format(data[date_column].iloc[0])
     data[date_column] = pd.to_datetime(data[date_column], format=strfttime)
     data[customer_id_column] = data[customer_id_column].astype(str)
     current_date = data[date_column].max()
 
     rfm = data.groupby(customer_id_column).agg({
-        date_column: lambda x: (x.max() - current_date).days,
+        date_column: lambda x: (current_date - x.max()).days,
         customer_id_column: 'count',
         monetary_value_column: 'sum'
     })
@@ -104,23 +107,23 @@ def rfm_analysis(date_column, customer_id_column, monetary_value_column):
 
 # Function to calculate custom quantiles
 def custom_quantiles(rfm, r_bins, f_bins):
-    r_quantiles_list = [(x + 1) / (r_bins) for x in range(0, r_bins)]
-    f_quantiles_list = [(x + 1) / (f_bins) for x in range(0, f_bins)]
-    r_quantiles = rfm.quantile(q=r_quantiles_list)
-    f_quantiles = rfm.quantile(q=f_quantiles_list)
+    r_quantiles_list = [(x + 1) / r_bins for x in range(r_bins)]
+    f_quantiles_list = [(x + 1) / f_bins for x in range(f_bins)]
+    r_quantiles = rfm['Recency'].quantile(q=r_quantiles_list)
+    f_quantiles = rfm['Frequency'].quantile(q=f_quantiles_list)
 
     def rfm_scoring(input, bins, quantile_list, parameter, quantiles):
         value = ""
         if parameter == "Recency":
             for q in reversed(range(len(quantile_list))):
-                if input <= quantiles[parameter][quantile_list[q]]:
+                if input <= quantiles[quantile_list[q]]:
                     value = q + 1
                 else:
                     break
             return value
         elif parameter == "Frequency":
-            for q in reversed(range(0, len(quantile_list))):
-                if input <= quantiles[parameter][quantile_list[q]]:
+            for q in reversed(range(len(quantile_list))):
+                if input <= quantiles[quantile_list[q]]:
                     value = q + 1
                 else:
                     break
@@ -209,35 +212,27 @@ if function_response is not None:
     )
     st.plotly_chart(fig2, use_container_width=True)
 
-    # Segmentation logic based on RFM
-    recency_bins = np.arange(start=r_max_slider, stop=r_slider, step=r_slider)
-    frequency_bins = np.arange(start=0, stop=f_max_slider + f_slider, step=f_slider)
-
-    hist, xedges, yedges = np.histogram2d(
-        x=function_response['Frequency'], y=function_response['Recency'], bins=[frequency_bins, recency_bins]
-    )
-
-    hist_df = pd.DataFrame(hist, index=xedges[:-1], columns=yedges[:-1])
-    hist_df = hist_df.loc[:, (hist_df != 0).any(axis=0)].loc[(hist_df != 0).any(axis=1)]
-    st.write(hist_df)
-
-    get_gpt_segments = openai.ChatCompletion.create(
-        model="gpt-4-1106-preview",
-        messages=[
-            {
-                "role": "system",
-                "content": f"If I had a dataframe below like this: \n {hist_df} \n where the headers represent the number of days since the customer last purchased, and the index represents the number of times the customers purchased (frequency), come up with distinct and non-overlapping segmentation conditions."
-            },
-        ],
-        temperature=0.7
-    )
-
-    st.title("GPT Suggested Segments")
-    for x in json.loads(get_gpt_segments["choices"][0]["message"]["content"])["segments"]:
-        try:
-            st.subheader(f"{x['name']} \n {x['r_condition']}, {x['f_condition']}")
-            st.write(f"Description of segment: {x['desc']}")
-            st.write("Number of contacts: ", len(function_response.query(f"({x['r_condition']}) & ({x['f_condition']})")))
-            st.write(function_response.query(f"({x['r_condition']}) & ({x['f_condition']})"))
-        except:
-            pass
+    # Handle GPT segments
+    try:
+        get_gpt_segments = openai.ChatCompletion.create(
+            model="gpt-4-1106-preview",
+            messages=[
+                {
+                    "role": "system",
+                    "content": f"If I had a dataframe below like this: \n {function_response} \n where the headers represent the number of days since the customer last purchased, and the index represents the number of times the customers purchased (frequency), come up with distinct and non-overlapping segmentation conditions."
+                },
+            ],
+            temperature=0.7
+        )
+        segments = json.loads(get_gpt_segments["choices"][0]["message"]["content"])["segments"]
+        st.title("GPT Suggested Segments")
+        for x in segments:
+            try:
+                st.subheader(f"{x['name']} \n {x['r_condition']}, {x['f_condition']}")
+                st.write(f"Description of segment: {x['desc']}")
+                st.write("Number of contacts: ", len(function_response.query(f"({x['r_condition']}) & ({x['f_condition']})")))
+                st.write(function_response.query(f"({x['r_condition']}) & ({x['f_condition']})"))
+            except Exception as e:
+                st.error(f"Error displaying segment: {e}")
+    except Exception as e:
+        st.error(f"Error getting GPT segments: {e}")
