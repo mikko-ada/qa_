@@ -32,7 +32,7 @@ from langchain.prompts import MessagesPlaceholder
 from langchain.chains import ConversationalRetrievalChain
 
 # Ensure your OpenAI API key is securely handled
-openai.api_key = "your-api-key-here"
+openai.api_key = "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"
 
 # Function to clean column names
 def rename_dataset_columns(dataframe):
