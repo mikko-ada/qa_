@@ -1,0 +1,11 @@
+streamlit
+langchain
+openai==0.28.1
+chromadb
+tiktoken
+docarray
+unstructured
+pysqlite3-binary
+numpy
+plotly
+mlxtend
