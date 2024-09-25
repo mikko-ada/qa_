@@ -54,72 +54,70 @@ def convert_datatype(df):
             pass
     return df.convert_dtypes()
 
-# File upload functionality and data loading
+# File upload functionality moved outside of the cached function
+uploaded_files = st.file_uploader("Choose a CSV file", accept_multiple_files=True)
+
+# Cached function to process data
 @st.cache(allow_output_mutation=True)
-def load_data():
-    uploaded_files = st.file_uploader("Choose a CSV file", accept_multiple_files=True)
-    if not uploaded_files:
-        return pd.DataFrame()
-    data_frames = []
-    for uploaded_file in uploaded_files:
-        stringio = StringIO(uploaded_file.getvalue().decode("utf-8"))
-        df = pd.read_csv(stringio)
-        data_frames.append(df)
+def process_data(data_frames):
     return pd.concat(data_frames, ignore_index=True) if data_frames else pd.DataFrame()
 
-orders_df = load_data()
-if not orders_df.empty:
-    orders_df = rename_dataset_columns(orders_df)
-    orders_df = convert_datatype(orders_df)
+# Processing uploaded data if available
+if uploaded_files:
+    data_frames = [pd.read_csv(StringIO(file.getvalue().decode("utf-8"))) for file in uploaded_files]
+    orders_df = process_data(data_frames)
+    if not orders_df.empty:
+        orders_df = rename_dataset_columns(orders_df)
+        orders_df = convert_datatype(orders_df)
 
-    # Function to determine datetime format using GPT
-    def get_time_format(time):
-        response = openai.ChatCompletion.create(
-            model="gpt-4-1106-preview",
-            messages=[{
-                "role": "system",
-                "content": f"If I had a datetime string like this: {time}, what is the strftime format of this string? Return the strftime format only. Do not return anything else."
-            }],
-            temperature=0
-        )
-        return response.choices[0]['message']['content']
+        # Function to determine datetime format using GPT
+        def get_time_format(time):
+            response = openai.ChatCompletion.create(
+                model="gpt-4-1106-preview",
+                messages=[{
+                    "role": "system",
+                    "content": f"If I had a datetime string like this: {time}, what is the strftime format of this string? Return the strftime format only. Do not return anything else."
+                }],
+                temperature=0
+            )
+            return response['choices'][0]['message']['content']
 
-    # RFM Analysis function
-    def rfm_analysis(date_column, customer_id_column, monetary_value_column):
-        data = orders_df.dropna(subset=[date_column, customer_id_column, monetary_value_column])
-        strftime_format = get_time_format(data[date_column].iloc[0])
-        data[date_column] = pd.to_datetime(data[date_column], format=strftime_format)
-        current_date = data[date_column].max()
-        
-        rfm = data.groupby(customer_id_column).agg({
-            date_column: lambda x: (current_date - x.max()).days,
-            customer_id_column: 'count',
-            monetary_value_column: 'sum'
-        }).rename(columns={
-            date_column: 'Recency',
-            customer_id_column: 'Frequency',
-            monetary_value_column: 'MonetaryValue'
-        })
-        return rfm
+        # RFM Analysis function
+        def rfm_analysis(date_column, customer_id_column, monetary_value_column):
+            data = orders_df.dropna(subset=[date_column, customer_id_column, monetary_value_column])
+            strftime_format = get_time_format(data[date_column].iloc[0])
+            data[date_column] = pd.to_datetime(data[date_column], format=strftime_format)
+            current_date = data[date_column].max()
+            
+            rfm = data.groupby(customer_id_column).agg({
+                date_column: lambda x: (current_date - x.max()).days,
+                customer_id_column: 'count',
+                monetary_value_column: 'sum'
+            }).rename(columns={
+                date_column: 'Recency',
+                customer_id_column: 'Frequency',
+                monetary_value_column: 'MonetaryValue'
+            })
+            return rfm
 
-    col_for_r = st.selectbox('What is the column used for recency - date of purchase?', orders_df.columns)
-    col_for_f = st.selectbox('What is the column used to identify a customer ID?', orders_df.columns)
-    col_for_m = st.selectbox('What is the column used for order value?', orders_df.columns)
+        col_for_r = st.selectbox('What is the column used for recency - date of purchase?', orders_df.columns)
+        col_for_f = st.selectbox('What is the column used to identify a customer ID?', orders_df.columns)
+        col_for_m = st.selectbox('What is the column used for order value?', orders_df.columns)
 
-    st.title("Key metrics")
-    function_response = rfm_analysis(col_for_r, col_for_f, col_for_m)
-    if function_response is not None:
-        st.metric(label="Average spending per customer", value=function_response["MonetaryValue"].mean())
-        st.metric(label="Average number of purchases per customer", value=function_response["Frequency"].mean())
-        st.metric(label="Average order value", value=function_response[col_for_m].mean())
+        st.title("Key metrics")
+        function_response = rfm_analysis(col_for_r, col_for_f, col_for_m)
+        if function_response is not None:
+            st.metric(label="Average spending per customer", value=function_response["MonetaryValue"].mean())
+            st.metric(label="Average number of purchases per customer", value=function_response["Frequency"].mean())
+            st.metric(label="Average order value", value=function_response[col_for_m].mean())
+            
+            st.title("Buying frequency")
+            st.write(function_response[["Frequency", "Recency"]])
+            fig = px.histogram(function_response, x="Frequency")
+            st.plotly_chart(fig)
 
-        st.title("Buying frequency")
-        st.write(function_response[["Frequency", "Recency"]])
-        fig = px.histogram(function_response, x="Frequency")
-        st.plotly_chart(fig)
-
-        st.title("RFM Analysis")
-        st.write(function_response)
-        st.scatter_chart(data=function_response, x="Recency", y="Frequency", color="MonetaryValue")
+            st.title("RFM Analysis")
+            st.write(function_response)
+            st.scatter_chart(data=function_response, x="Recency", y="Frequency", color="MonetaryValue")
 else:
     st.warning("Please upload a CSV file to proceed with the analysis.")
