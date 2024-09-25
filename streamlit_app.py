@@ -12,7 +12,7 @@ if not api_key:
     st.stop()  # Halts further execution if the API key is not configured
 
 # Importing the OpenAI library only after confirming the API key is available
-openai.api_key = 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
+openai.api_key = api_key
 
 # Handle the Chroma import with a fallback
 try:
